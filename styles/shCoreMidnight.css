@@ -64,7 +64,12 @@
 }
 
 /* bluelovers */
-.syntaxhighlighter { max-height:30em; }
+.syntaxhighlighter {
+	max-height:30em;
+	-moz-border-radius: 5px !important;
+	border-radius: 5px !important;
+	-webkit-border-radius: 5px !important;
+}
 .syntaxhighlighter code.spaces, .syntaxhighlighter pre.spaces {
 	/*display:inline-block;*/
 	display:none;
@@ -252,10 +257,10 @@
   background-color: #0f192a !important;
 }
 .syntaxhighlighter .line.alt1 {
-  background-color: #0f192a !important;
+  /*background-color: #0f192a !important;*/
 }
 .syntaxhighlighter .line.alt2 {
-  background-color: #0f192a !important;
+  /*background-color: #0f192a !important;*/
 }
 .syntaxhighlighter .line.highlighted.alt1, .syntaxhighlighter .line.highlighted.alt2 {
   background-color: #253e5a !important;
