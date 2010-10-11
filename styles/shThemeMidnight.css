@@ -7,7 +7,7 @@
  *
  * @version
  * 3.0.83 (July 02 2010)
- * 
+ *
  * @copyright
  * Copyright (C) 2004-2010 Alex Gorbatchev.
  *
@@ -100,7 +100,8 @@
 .syntaxhighlighter .script {
   font-weight: bold !important;
   color: #b43d3d !important;
-  background-color: none !important;
+  /*background-color: none !important;*/
+  background-color: #404040 !important;
 }
 .syntaxhighlighter .color1, .syntaxhighlighter .color1 a {
   color: #f8bb00 !important;

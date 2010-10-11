@@ -7,17 +7,422 @@
  *
  * @version
  * 3.0.83 (July 02 2010)
- * 
+ *
  * @copyright
  * Copyright (C) 2004-2010 Alex Gorbatchev.
  *
  * @license
  * Dual licensed under the MIT and GPL licenses.
  */
+
+/**
+ * XRegExp 0.6.1
+ * (c) 2007-2008 Steven Levithan
+ * <http://stevenlevithan.com/regex/xregexp/>
+ * MIT License
+ *
+ * provides an augmented, cross-browser implementation of regular expressions
+ * including support for additional modifiers and syntax. several convenience
+ * methods and a recursive-construct parser are also included.
+ */
+
+// prevent running twice, which would break references to native globals
+if (!window.XRegExp) {
+// anonymous function to avoid global variables
+(function () {
+// copy various native globals for reference. can't use the name ``native``
+// because it's a reserved JavaScript keyword.
+var real = {
+        exec:    RegExp.prototype.exec,
+        match:   String.prototype.match,
+        replace: String.prototype.replace,
+        split:   String.prototype.split
+    },
+    /* regex syntax parsing with support for all the necessary cross-
+       browser and context issues (escapings, character classes, etc.) */
+    lib = {
+        part:       /(?:[^\\([#\s.]+|\\(?!k<[\w$]+>|[pP]{[^}]+})[\S\s]?|\((?=\?(?!#|<[\w$]+>)))+|(\()(?:\?(?:(#)[^)]*\)|<([$\w]+)>))?|\\(?:k<([\w$]+)>|[pP]{([^}]+)})|(\[\^?)|([\S\s])/g,
+        replaceVar: /(?:[^$]+|\$(?![1-9$&`']|{[$\w]+}))+|\$(?:([1-9]\d*|[$&`'])|{([$\w]+)})/g,
+        extended:   /^(?:\s+|#.*)+/,
+        quantifier: /^(?:[?*+]|{\d+(?:,\d*)?})/,
+        classLeft:  /&&\[\^?/g,
+        classRight: /]/g
+    },
+    indexOf = function (array, item, from) {
+        for (var i = from || 0; i < array.length; i++)
+            if (array[i] === item) return i;
+        return -1;
+    },
+    brokenExecUndef = /()??/.exec("")[1] !== undefined,
+    plugins = {};
+
+/**
+ * Accepts a pattern and flags, returns a new, extended RegExp object.
+ * differs from a native regex in that additional flags and syntax are
+ * supported and browser inconsistencies are ameliorated.
+ * @ignore
+ */
+XRegExp = function (pattern, flags) {
+    if (pattern instanceof RegExp) {
+        if (flags !== undefined)
+            throw TypeError("can't supply flags when constructing one RegExp from another");
+        return pattern.addFlags(); // new copy
+    }
+
+    var flags           = flags || "",
+        singleline      = flags.indexOf("s") > -1,
+        extended        = flags.indexOf("x") > -1,
+        hasNamedCapture = false,
+        captureNames    = [],
+        output          = [],
+        part            = lib.part,
+        match, cc, len, index, regex;
+
+    part.lastIndex = 0; // in case the last XRegExp compilation threw an error (unbalanced character class)
+
+    while (match = real.exec.call(part, pattern)) {
+        // comment pattern. this check must come before the capturing group check,
+        // because both match[1] and match[2] will be non-empty.
+        if (match[2]) {
+            // keep tokens separated unless the following token is a quantifier
+            if (!lib.quantifier.test(pattern.slice(part.lastIndex)))
+                output.push("(?:)");
+        // capturing group
+        } else if (match[1]) {
+            captureNames.push(match[3] || null);
+            if (match[3])
+                hasNamedCapture = true;
+            output.push("(");
+        // named backreference
+        } else if (match[4]) {
+            index = indexOf(captureNames, match[4]);
+            // keep backreferences separate from subsequent literal numbers
+            // preserve backreferences to named groups that are undefined at this point as literal strings
+            output.push(index > -1 ?
+                "\\" + (index + 1) + (isNaN(pattern.charAt(part.lastIndex)) ? "" : "(?:)") :
+                match[0]
+            );
+        // unicode element (requires plugin)
+        } else if (match[5]) {
+            output.push(plugins.unicode ?
+                plugins.unicode.get(match[5], match[0].charAt(1) === "P") :
+                match[0]
+            );
+        // character class opening delimiter ("[" or "[^")
+        // (non-native unicode elements are not supported within character classes)
+        } else if (match[6]) {
+            if (pattern.charAt(part.lastIndex) === "]") {
+                // for cross-browser compatibility with ECMA-262 v3 behavior,
+                // convert [] to (?!) and [^] to [\S\s].
+                output.push(match[6] === "[" ? "(?!)" : "[\\S\\s]");
+                part.lastIndex++;
+            } else {
+                // parse the character class with support for inner escapes and
+                // ES4's infinitely nesting intersection syntax ([&&[^&&[]]]).
+                cc = XRegExp.matchRecursive("&&" + pattern.slice(match.index), lib.classLeft, lib.classRight, "", {escapeChar: "\\"})[0];
+                output.push(match[6] + cc + "]");
+                part.lastIndex += cc.length + 1;
+            }
+        // dot ("."), pound sign ("#"), or whitespace character
+        } else if (match[7]) {
+            if (singleline && match[7] === ".") {
+                output.push("[\\S\\s]");
+            } else if (extended && lib.extended.test(match[7])) {
+                len = real.exec.call(lib.extended, pattern.slice(part.lastIndex - 1))[0].length;
+                // keep tokens separated unless the following token is a quantifier
+                if (!lib.quantifier.test(pattern.slice(part.lastIndex - 1 + len)))
+                    output.push("(?:)");
+                part.lastIndex += len - 1;
+            } else {
+                output.push(match[7]);
+            }
+        } else {
+            output.push(match[0]);
+        }
+    }
+
+    regex = RegExp(output.join(""), real.replace.call(flags, /[sx]+/g, ""));
+    regex._x = {
+        source:       pattern,
+        captureNames: hasNamedCapture ? captureNames : null
+    };
+    return regex;
+};
+
+/**
+ * Barebones plugin support for now (intentionally undocumented)
+ * @ignore
+ * @param {Object} name
+ * @param {Object} o
+ */
+XRegExp.addPlugin = function (name, o) {
+    plugins[name] = o;
+};
+
+/**
+ * Adds named capture support, with values returned as ``result.name``.
+ *
+ * Also fixes two cross-browser issues, following the ECMA-262 v3 spec:
+ *  - captured values for non-participating capturing groups should be returned
+ *    as ``undefined``, rather than the empty string.
+ *  - the regex's ``lastIndex`` should not be incremented after zero-length
+ *    matches.
+ * @ignore
+ */
+RegExp.prototype.exec = function (str) {
+    var match = real.exec.call(this, str),
+        name, i, r2;
+    if (match) {
+        // fix browsers whose exec methods don't consistently return
+        // undefined for non-participating capturing groups
+        if (brokenExecUndef && match.length > 1) {
+            // r2 doesn't need /g or /y, but they shouldn't hurt
+            r2 = new RegExp("^" + this.source + "$(?!\\s)", this.getNativeFlags());
+            real.replace.call(match[0], r2, function () {
+                for (i = 1; i < arguments.length - 2; i++) {
+                    if (arguments[i] === undefined) match[i] = undefined;
+                }
+            });
+        }
+        // attach named capture properties
+        if (this._x && this._x.captureNames) {
+            for (i = 1; i < match.length; i++) {
+                name = this._x.captureNames[i - 1];
+                if (name) match[name] = match[i];
+            }
+        }
+        // fix browsers that increment lastIndex after zero-length matches
+        if (this.global && this.lastIndex > (match.index + match[0].length))
+            this.lastIndex--;
+    }
+    return match;
+};
+})(); // end anonymous function
+} // end if(!window.XRegExp)
+
+/**
+ * intentionally undocumented
+ * @ignore
+ */
+RegExp.prototype.getNativeFlags = function () {
+    return (this.global     ? "g" : "") +
+           (this.ignoreCase ? "i" : "") +
+           (this.multiline  ? "m" : "") +
+           (this.extended   ? "x" : "") +
+           (this.sticky     ? "y" : "");
+};
+
+/**
+ * Accepts flags; returns a new XRegExp object generated by recompiling
+ * the regex with the additional flags (may include non-native flags).
+ * The original regex object is not altered.
+ * @ignore
+ */
+RegExp.prototype.addFlags = function (flags) {
+    var regex = new XRegExp(this.source, (flags || "") + this.getNativeFlags());
+    if (this._x) {
+        regex._x = {
+            source:       this._x.source,
+            captureNames: this._x.captureNames ? this._x.captureNames.slice(0) : null
+        };
+    }
+    return regex;
+};
+
+/**
+ * Accepts a context object and string; returns the result of calling
+ * ``exec`` with the provided string. the context is ignored but is
+ * accepted for congruity with ``Function.prototype.call``.
+ * @ignore
+ */
+RegExp.prototype.call = function (context, str) {
+    return this.exec(str);
+};
+
+/**
+ * Accepts a context object and arguments array; returns the result of
+ * calling ``exec`` with the first value in the arguments array. the context
+ * is ignored but is accepted for congruity with ``Function.prototype.apply``.
+ * @ignore
+ */
+RegExp.prototype.apply = function (context, args) {
+    return this.exec(args[0]);
+};
+
+/**
+ * Accepts a pattern and flags; returns an XRegExp object. if the pattern
+ * and flag combination has previously been cached, the cached copy is
+ * returned, otherwise the new object is cached.
+ * @ignore
+ */
+XRegExp.cache = function (pattern, flags) {
+    var key = "/" + pattern + "/" + (flags || "");
+    return XRegExp.cache[key] || (XRegExp.cache[key] = new XRegExp(pattern, flags));
+};
+
+/**
+ * Accepts a string; returns the string with regex metacharacters escaped.
+ * the returned string can safely be used within a regex to match a literal
+ * string. escaped characters are [, ], {, }, (, ), -, *, +, ?, ., \, ^, $,
+ * |, #, [comma], and whitespace.
+ * @ignore
+ */
+XRegExp.escape = function (str) {
+    return str.replace(/[-[\]{}()*+?.\\^$|,#\s]/g, "\\$&");
+};
+
+/**
+ * Accepts a string to search, left and right delimiters as regex pattern
+ * strings, optional regex flags (may include non-native s, x, and y flags),
+ * and an options object which allows setting an escape character and changing
+ * the return format from an array of matches to a two-dimensional array of
+ * string parts with extended position data. returns an array of matches
+ * (optionally with extended data), allowing nested instances of left and right
+ * delimiters. use the g flag to return all matches, otherwise only the first
+ * is returned. if delimiters are unbalanced within the subject data, an error
+ * is thrown.
+ *
+ * This function admittedly pushes the boundaries of what can be accomplished
+ * sensibly without a "real" parser. however, by doing so it provides flexible
+ * and powerful recursive parsing capabilities with minimal code weight.
+ *
+ * Warning: the ``escapeChar`` option is considered experimental and might be
+ * changed or removed in future versions of XRegExp.
+ *
+ * unsupported features:
+ *  - backreferences within delimiter patterns when using ``escapeChar``.
+ *  - although providing delimiters as regex objects adds the minor feature of
+ *    independent delimiter flags, it introduces other limitations and is only
+ *    intended to be done by the ``XRegExp`` constructor (which can't call
+ *    itself while building a regex).
+ *
+ * @ignore
+ */
+XRegExp.matchRecursive = function (str, left, right, flags, options) {
+    var options      = options || {},
+        escapeChar   = options.escapeChar,
+        vN           = options.valueNames,
+        flags        = flags || "",
+        global       = flags.indexOf("g") > -1,
+        ignoreCase   = flags.indexOf("i") > -1,
+        multiline    = flags.indexOf("m") > -1,
+        sticky       = flags.indexOf("y") > -1,
+        /* sticky mode has its own handling in this function, which means you
+           can use flag "y" even in browsers which don't support it natively */
+        flags        = flags.replace(/y/g, ""),
+        left         = left  instanceof RegExp ? (left.global  ? left  : left.addFlags("g"))  : new XRegExp(left,  "g" + flags),
+        right        = right instanceof RegExp ? (right.global ? right : right.addFlags("g")) : new XRegExp(right, "g" + flags),
+        output       = [],
+        openTokens   = 0,
+        delimStart   = 0,
+        delimEnd     = 0,
+        lastOuterEnd = 0,
+        outerStart, innerStart, leftMatch, rightMatch, escaped, esc;
+
+    if (escapeChar) {
+        if (escapeChar.length > 1) throw SyntaxError("can't supply more than one escape character");
+        if (multiline)             throw TypeError("can't supply escape character when using the multiline flag");
+        escaped = XRegExp.escape(escapeChar);
+        /* Escape pattern modifiers:
+            /g - not needed here
+            /i - included
+            /m - **unsupported**, throws error
+            /s - handled by XRegExp when delimiters are provided as strings
+            /x - handled by XRegExp when delimiters are provided as strings
+            /y - not needed here; supported by other handling in this function
+        */
+        esc = new RegExp(
+            "^(?:" + escaped + "[\\S\\s]|(?:(?!" + left.source + "|" + right.source + ")[^" + escaped + "])+)+",
+            ignoreCase ? "i" : ""
+        );
+    }
+
+    while (true) {
+        /* advance the starting search position to the end of the last delimiter match.
+           a couple special cases are also covered:
+            - if using an escape character, advance to the next delimiter's starting position,
+              skipping any escaped characters
+            - first time through, reset lastIndex in case delimiters were provided as regexes
+        */
+        left.lastIndex = right.lastIndex = delimEnd +
+            (escapeChar ? (esc.exec(str.slice(delimEnd)) || [""])[0].length : 0);
+
+        leftMatch  = left.exec(str);
+        rightMatch = right.exec(str);
+
+        // only keep the result which matched earlier in the string
+        if (leftMatch && rightMatch) {
+            if (leftMatch.index <= rightMatch.index)
+                 rightMatch = null;
+            else leftMatch  = null;
+        }
+
+        /* paths*:
+        leftMatch | rightMatch | openTokens | result
+        1         | 0          | 1          | ...
+        1         | 0          | 0          | ...
+        0         | 1          | 1          | ...
+        0         | 1          | 0          | throw
+        0         | 0          | 1          | throw
+        0         | 0          | 0          | break
+        * - does not include the sticky mode special case
+          - the loop ends after the first completed match if not in global mode
+        */
+
+        if (leftMatch || rightMatch) {
+            delimStart = (leftMatch || rightMatch).index;
+            delimEnd   = (leftMatch ? left : right).lastIndex;
+        } else if (!openTokens) {
+            break;
+        }
+
+        if (sticky && !openTokens && delimStart > lastOuterEnd)
+            break;
+
+        if (leftMatch) {
+            if (!openTokens++) {
+                outerStart = delimStart;
+                innerStart = delimEnd;
+            }
+        } else if (rightMatch && openTokens) {
+            if (!--openTokens) {
+                if (vN) {
+                    if (vN[0] && outerStart > lastOuterEnd)
+                               output.push([vN[0], str.slice(lastOuterEnd, outerStart), lastOuterEnd, outerStart]);
+                    if (vN[1]) output.push([vN[1], str.slice(outerStart,   innerStart), outerStart,   innerStart]);
+                    if (vN[2]) output.push([vN[2], str.slice(innerStart,   delimStart), innerStart,   delimStart]);
+                    if (vN[3]) output.push([vN[3], str.slice(delimStart,   delimEnd),   delimStart,   delimEnd]);
+                } else {
+                    output.push(str.slice(innerStart, delimStart));
+                }
+                lastOuterEnd = delimEnd;
+                if (!global)
+                    break;
+            }
+        } else {
+            // reset lastIndex in case delimiters were provided as regexes
+            left.lastIndex = right.lastIndex = 0;
+            throw Error("subject data contains unbalanced delimiters");
+        }
+
+        // if the delimiter matched an empty string, advance delimEnd to avoid an infinite loop
+        if (delimStart === delimEnd)
+            delimEnd++;
+    }
+
+    if (global && !sticky && vN && vN[0] && str.length > lastOuterEnd)
+        output.push([vN[0], str.slice(lastOuterEnd), lastOuterEnd, str.length]);
+
+    // reset lastIndex in case delimiters were provided as regexes
+    left.lastIndex = right.lastIndex = 0;
+
+    return output;
+};
+
 //
 // Begin anonymous function. This is used to contain local scope variables without polutting global scope.
 //
-var SyntaxHighlighter = function() { 
+var SyntaxHighlighter = function() {
 
 // CommonJS
 if (typeof(require) != 'undefined' && typeof(XRegExp) == 'undefined')
@@ -26,16 +431,16 @@ if (typeof(require) != 'undefined' && typeof(XRegExp) == 'undefined')
 }
 
 // Shortcut object which will be assigned to the SyntaxHighlighter variable.
-// This is a shorthand for local reference in order to avoid long namespace 
+// This is a shorthand for local reference in order to avoid long namespace
 // references to SyntaxHighlighter.whatever...
 var sh = {
 	defaults : {
 		/** Additional CSS class names to be added to highlighter elements. */
 		'class-name' : '',
-		
+
 		/** First line number. */
 		'first-line' : 1,
-		
+
 		/**
 		 * Pads line numbers. Possible values are:
 		 *
@@ -44,72 +449,77 @@ var sh = {
 		 *   [int] - length up to which pad line numbers.
 		 */
 		'pad-line-numbers' : false,
-		
+
 		/** Lines to highlight. */
 		'highlight' : null,
-		
+
 		/** Title to be displayed above the code block. */
 		'title' : null,
-		
+
 		/** Enables or disables smart tabs. */
 		'smart-tabs' : true,
-		
+
 		/** Gets or sets tab size. */
 		'tab-size' : 4,
-		
+
 		/** Enables or disables gutter. */
 		'gutter' : true,
-		
+
 		/** Enables or disables toolbar. */
 		'toolbar' : true,
-		
+
 		/** Enables quick code copy and paste from double click. */
 		'quick-code' : true,
-		
+
 		/** Forces code view to be collapsed. */
 		'collapse' : false,
-		
+
 		/** Enables or disables automatic links. */
 		'auto-links' : true,
-		
+
 		/** Gets or sets light mode. Equavalent to turning off gutter and toolbar. */
 		'light' : false,
-		
+
 		'html-script' : false
 	},
-	
+
 	config : {
 		space : '&nbsp;',
-		
+
 		/** Enables use of <SCRIPT type="syntaxhighlighter" /> tags. */
 		useScriptTags : true,
-		
+
 		/** Blogger mode flag. */
 		bloggerMode : false,
-		
+
 		stripBrs : false,
-		
+
 		/** Name of the tag that SyntaxHighlighter will automatically look for. */
 		tagName : 'pre',
-		
+
 		strings : {
 			expandSource : 'expand source',
 			help : '?',
 			alert: 'SyntaxHighlighter\n\n',
 			noBrush : 'Can\'t find brush for: ',
 			brushNotHtmlScript : 'Brush wasn\'t configured for html-script option: ',
-			
+
 			// this is populated by the build script
 			aboutDialog : '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><title>About SyntaxHighlighter</title></head><body style="font-family:Geneva,Arial,Helvetica,sans-serif;background-color:#fff;color:#000;font-size:1em;text-align:center;"><div style="text-align:center;margin-top:1.5em;"><div style="font-size:xx-large;">SyntaxHighlighter</div><div style="font-size:.75em;margin-bottom:3em;"><div>version 3.0.83 (July 02 2010)</div><div><a href="http://alexgorbatchev.com/SyntaxHighlighter" target="_blank" style="color:#005896">http://alexgorbatchev.com/SyntaxHighlighter</a></div><div>JavaScript code syntax highlighter.</div><div>Copyright 2004-2010 Alex Gorbatchev.</div></div><div>If you like this script, please <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=2930402" style="color:#005896">donate</a> to <br/>keep development active!</div></div></body></html>'
 		}
 	},
-	
+
 	/** Internal 'global' variables. */
 	vars : {
 		discoveredBrushes : null,
+
+		/* bluelovers */
+		spaceWidth : null,
+		/* bluelovers */
+
 		highlighters : {}
 	},
-	
+
 	/** This object is populated by user included external brush files. */
 	brushes : {},
 
@@ -124,13 +534,13 @@ var sh = {
 		multiLineSingleQuotedString	: new XRegExp("'([^\\\\']|\\\\.)*'", 'gs'),
 		xmlComments					: /(&lt;|<)!--[\s\S]*?--(&gt;|>)/gm,
 		url							: /\w+:\/\/[\w-.\/?%&=:@;]*/g,
-		
+
 		/** <?= ?> tags. */
 		phpScriptTags 				: { left: /(&lt;|<)\?=?/g, right: /\?(&gt;|>)/g },
-		
+
 		/** <%= %> tags. */
 		aspScriptTags				: { left: /(&lt;|<)%=?/g, right: /%(&gt;|>)/g },
-		
+
 		/** <script></script> tags. */
 		scriptScriptTags			: { left: /(&lt;|<)\s*script.*?(&gt;|>)/gi, right: /(&lt;|<)\/\s*script\s*(&gt;|>)/gi }
 	},
@@ -147,20 +557,20 @@ var sh = {
 				items = sh.toolbar.items,
 				list = items.list
 				;
-			
+
 			function defaultGetHtml(highlighter, name)
 			{
 				return sh.toolbar.getButtonHtml(highlighter, name, sh.config.strings[name]);
 			};
-			
+
 			for (var i = 0; i < list.length; i++)
 				html += (items[list[i]].getHtml || defaultGetHtml)(highlighter, list[i]);
-			
+
 			html += '</div>';
-			
+
 			return html;
 		},
-		
+
 		/**
 		 * Generates HTML markup for a regular button in the toolbar.
 		 * @param {Highlighter} highlighter Highlighter instance.
@@ -176,7 +586,7 @@ var sh = {
 				+ '">' + label + '</a></span>'
 				;
 		},
-		
+
 		/**
 		 * Event handler for a toolbar anchor.
 		 */
@@ -194,11 +604,11 @@ var sh = {
 
 				return match ? match[1] : null;
 			};
-			
+
 			var highlighter = getHighlighterById(findParentElement(target, '.syntaxhighlighter').id),
 				commandName = getValue('command')
 				;
-			
+
 			// execute the toolbar command
 			if (highlighter && commandName)
 				sh.toolbar.items[commandName].execute(highlighter);
@@ -206,7 +616,7 @@ var sh = {
 			// disable default A click behaviour
 			e.preventDefault();
 		},
-		
+
 		/** Collection of toolbar items. */
 		items : {
 			// Ordered lis of items in the toolbar. Can't expect `for (var n in items)` to be consistent.
@@ -217,11 +627,11 @@ var sh = {
 				{
 					if (highlighter.getParam('collapse') != true)
 						return '';
-						
+
 					var title = highlighter.getParam('title');
 					return sh.toolbar.getButtonHtml(highlighter, 'expandSource', title ? title : sh.config.strings.expandSource);
 				},
-			
+
 				execute: function(highlighter)
 				{
 					var div = getHighlighterDivById(highlighter.id);
@@ -232,11 +642,11 @@ var sh = {
 			/** Command to display the about dialog window. */
 			help: {
 				execute: function(highlighter)
-				{	
+				{
 					var wnd = popup('', '_blank', 500, 250, 'scrollbars=0'),
 						doc = wnd.document
 						;
-					
+
 					doc.write(sh.config.strings.aboutDialog);
 					doc.close();
 					wnd.focus();
@@ -248,18 +658,18 @@ var sh = {
 	/**
 	 * Finds all elements on the page which should be processes by SyntaxHighlighter.
 	 *
-	 * @param {Object} globalParams		Optional parameters which override element's 
+	 * @param {Object} globalParams		Optional parameters which override element's
 	 * 									parameters. Only used if element is specified.
-	 * 
+	 *
 	 * @param {Object} element	Optional element to highlight. If none is
-	 * 							provided, all elements in the current document 
+	 * 							provided, all elements in the current document
 	 * 							are returned which qualify.
 	 *
 	 * @return {Array}	Returns list of <code>{ target: DOMElement, params: Object }</code> objects.
 	 */
 	findElements: function(globalParams, element)
 	{
-		var elements = element ? [element] : toArray(document.getElementsByTagName(sh.config.tagName)), 
+		var elements = element ? [element] : toArray(document.getElementsByTagName(sh.config.tagName)),
 			conf = sh.config,
 			result = []
 			;
@@ -268,49 +678,49 @@ var sh = {
 		if (conf.useScriptTags)
 			elements = elements.concat(getSyntaxHighlighterScriptTags());
 
-		if (elements.length === 0) 
+		if (elements.length === 0)
 			return result;
-	
-		for (var i = 0; i < elements.length; i++) 
+
+		for (var i = 0; i < elements.length; i++)
 		{
 			var item = {
-				target: elements[i], 
+				target: elements[i],
 				// local params take precedence over globals
 				params: merge(globalParams, parseParams(elements[i].className))
 			};
 
 			if (item.params['brush'] == null)
 				continue;
-				
+
 			result.push(item);
 		}
-		
+
 		return result;
 	},
 
 	/**
-	 * Shorthand to highlight all elements on the page that are marked as 
+	 * Shorthand to highlight all elements on the page that are marked as
 	 * SyntaxHighlighter source code.
-	 * 
-	 * @param {Object} globalParams		Optional parameters which override element's 
+	 *
+	 * @param {Object} globalParams		Optional parameters which override element's
 	 * 									parameters. Only used if element is specified.
-	 * 
+	 *
 	 * @param {Object} element	Optional element to highlight. If none is
-	 * 							provided, all elements in the current document 
+	 * 							provided, all elements in the current document
 	 * 							are highlighted.
-	 */ 
+	 */
 	highlight: function(globalParams, element)
 	{
 		var elements = this.findElements(globalParams, element),
-			propertyName = 'innerHTML', 
+			propertyName = 'innerHTML',
 			highlighter = null,
 			conf = sh.config
 			;
 
-		if (elements.length === 0) 
+		if (elements.length === 0)
 			return;
-	
-		for (var i = 0; i < elements.length; i++) 
+
+		for (var i = 0; i < elements.length; i++)
 		{
 			var element = elements[i],
 				target = element.target,
@@ -323,7 +733,7 @@ var sh = {
 				continue;
 
 			// Instantiate a brush
-			if (params['html-script'] == 'true' || sh.defaults['html-script'] == true) 
+			if (params['html-script'] == 'true' || sh.defaults['html-script'] == true)
 			{
 				highlighter = new sh.HtmlScript(brushName);
 				brushName = 'htmlscript';
@@ -331,31 +741,31 @@ var sh = {
 			else
 			{
 				var brush = findBrush(brushName);
-				
+
 				if (brush)
 					highlighter = new brush();
 				else
 					continue;
 			}
-			
+
 			code = target[propertyName];
-			
+
 			// remove CDATA from <SCRIPT/> tags if it's present
 			if (conf.useScriptTags)
 				code = stripCData(code);
-				
+
 			// Inject title if the attribute is present
 			if ((target.title || '') != '')
 				params.title = target.title;
-				
+
 			params['brush'] = brushName;
 			highlighter.init(params);
 			element = highlighter.getDiv(code);
-			
+
 			// carry over ID
 			if ((target.id || '') != '')
 				element.id = target.id;
-			
+
 			target.parentNode.replaceChild(element, target);
 		}
 	},
@@ -410,7 +820,7 @@ function removeClass(target, className)
 };
 
 /**
- * Converts the source to array object. Mostly used for function arguments and 
+ * Converts the source to array object. Mostly used for function arguments and
  * lists returned by getElementsByTagName() which aren't Array objects.
  * @param {List} source Source list.
  * @return {Array} Returns array.
@@ -418,10 +828,10 @@ function removeClass(target, className)
 function toArray(source)
 {
 	var result = [];
-	
-	for (var i = 0; i < source.length; i++) 
+
+	for (var i = 0; i < source.length; i++)
 		result.push(source[i]);
-		
+
 	return result;
 };
 
@@ -488,7 +898,7 @@ function findElement(target, search, reverse /* optional */)
 {
 	if (target == null)
 		return null;
-		
+
 	var nodes			= reverse != true ? target.childNodes : [ target.parentNode ],
 		propertyToFind	= { '#' : 'id', '.' : 'className' }[search.substr(0, 1)] || 'nodeName',
 		expectedValue,
@@ -499,14 +909,14 @@ function findElement(target, search, reverse /* optional */)
 		? search.substr(1)
 		: search.toUpperCase()
 		;
-		
+
 	// main return of the found node
 	if ((target[propertyToFind] || '').indexOf(expectedValue) != -1)
 		return target;
-	
+
 	for (var i = 0; nodes && i < nodes.length && found == null; i++)
 		found = findElement(nodes[i], search, reverse);
-	
+
 	return found;
 };
 
@@ -536,7 +946,7 @@ function indexOf(array, searchElement, fromIndex)
 	for (var i = fromIndex; i < array.length; i++)
 		if(array[i] == searchElement)
 			return i;
-	
+
 	return -1;
 };
 
@@ -559,12 +969,12 @@ function merge(obj1, obj2)
 {
 	var result = {}, name;
 
-	for (name in obj1) 
+	for (name in obj1)
 		result[name] = obj1[name];
-	
-	for (name in obj2) 
+
+	for (name in obj2)
 		result[name] = obj2[name];
-		
+
 	return result;
 };
 
@@ -593,8 +1003,8 @@ function popup(url, name, width, height, options)
 	var x = (screen.width - width) / 2,
 		y = (screen.height - height) / 2
 		;
-		
-	options +=	', left=' + x + 
+
+	options +=	', left=' + x +
 				', top=' + y +
 				', width=' + width +
 				', height=' + height
@@ -617,7 +1027,7 @@ function attachEvent(obj, type, func, scope)
 	function handler(e)
 	{
 		e = e || window.event;
-		
+
 		if (!e.target)
 		{
 			e.target = e.srcElement;
@@ -626,15 +1036,15 @@ function attachEvent(obj, type, func, scope)
 				this.returnValue = false;
 			};
 		}
-			
+
 		func.call(scope || window, e);
 	};
-	
-	if (obj.attachEvent) 
+
+	if (obj.attachEvent)
 	{
 		obj.attachEvent('on' + type, handler);
 	}
-	else 
+	else
 	{
 		obj.addEventListener(type, handler, false);
 	}
@@ -661,36 +1071,36 @@ function findBrush(alias, showAlert)
 	var brushes = sh.vars.discoveredBrushes,
 		result = null
 		;
-	
-	if (brushes == null) 
+
+	if (brushes == null)
 	{
 		brushes = {};
-		
+
 		// Find all brushes
-		for (var brush in sh.brushes) 
+		for (var brush in sh.brushes)
 		{
 			var info = sh.brushes[brush],
 				aliases = info.aliases
 				;
-			
-			if (aliases == null) 
+
+			if (aliases == null)
 				continue;
-			
+
 			// keep the brush name
 			info.brushName = brush.toLowerCase();
-			
-			for (var i = 0; i < aliases.length; i++) 
+
+			for (var i = 0; i < aliases.length; i++)
 				brushes[aliases[i]] = brush;
 		}
-		
+
 		sh.vars.discoveredBrushes = brushes;
 	}
-	
+
 	result = sh.brushes[brushes[alias]];
 
 	if (result == null && showAlert != false)
 		alert(sh.config.strings.noBrush + alias);
-	
+
 	return result;
 };
 
@@ -702,17 +1112,17 @@ function findBrush(alias, showAlert)
 function eachLine(str, callback)
 {
 	var lines = splitLines(str);
-	
+
 	for (var i = 0; i < lines.length; i++)
 		lines[i] = callback(lines[i], i);
-		
+
 	return lines.join('\n');
 };
 
 /**
  * This is a special trim which only removes first and last empty lines
  * and doesn't affect valid leading space on the first line.
- * 
+ *
  * @param {String} str   Input string
  * @return {String}      Returns string without empty first and last lines.
  */
@@ -723,22 +1133,22 @@ function trimFirstAndLastLines(str)
 
 /**
  * Parses key/value pairs into hash object.
- * 
+ *
  * Understands the following formats:
  * - name: word;
  * - name: [word, word];
  * - name: "string";
  * - name: 'string';
- * 
+ *
  * For example:
  *   name1: value; name2: [value, value]; name3: 'value'
- *   
+ *
  * @param {String} str    Input string.
  * @return {Object}       Returns deserialized object.
  */
 function parseParams(str)
 {
-	var match, 
+	var match,
 		result = {},
 		arrayRegex = new XRegExp("^\\[(?<values>(.*?))\\]$"),
 		regex = new XRegExp(
@@ -754,35 +1164,35 @@ function parseParams(str)
 		)
 		;
 
-	while ((match = regex.exec(str)) != null) 
+	while ((match = regex.exec(str)) != null)
 	{
 		var value = match.value
 			.replace(/^['"]|['"]$/g, '') // strip quotes from end of strings
 			;
-		
+
 		// try to parse array value
 		if (value != null && arrayRegex.test(value))
 		{
 			var m = arrayRegex.exec(value);
 			value = m.values.length > 0 ? m.values.split(/\s*,\s*/) : [];
 		}
-		
+
 		result[match.name] = value;
 	}
-	
+
 	return result;
 };
 
 /**
  * Wraps each line of the string into <code/> tag with given style applied to it.
- * 
+ *
  * @param {String} str   Input string.
  * @param {String} css   Style name to apply to the string.
  * @return {String}      Returns input string with each line surrounded by <span/> tag.
  */
 function wrapLinesWithCode(str, css)
 {
-	if (str == null || str.length == 0 || str == '\n') 
+	if (str == null || str.length == 0 || str == '\n')
 		return str;
 
 	str = str.replace(/</g, '&lt;');
@@ -791,32 +1201,32 @@ function wrapLinesWithCode(str, css)
 	str = str.replace(/ {2,}/g, function(m)
 	{
 		var spaces = '';
-		
+
 		for (var i = 0; i < m.length - 1; i++)
 			spaces += sh.config.space;
-		
+
 		return spaces + ' ';
 	});
 
 	// Split each line and apply <span class="...">...</span> to them so that
 	// leading spaces aren't included.
-	if (css != null) 
+	if (css != null)
 		str = eachLine(str, function(line)
 		{
-			if (line.length == 0) 
+			if (line.length == 0)
 				return '';
-			
+
 			var spaces = '';
-			
+
 			line = line.replace(/^(&nbsp;| )+/, function(s)
 			{
 				spaces = s;
 				return '';
 			});
-			
-			if (line.length == 0) 
+
+			if (line.length == 0)
 				return spaces;
-			
+
 			return spaces + '<code class="' + css + '">' + line + '</code>';
 		});
 
@@ -825,7 +1235,7 @@ function wrapLinesWithCode(str, css)
 
 /**
  * Pads number with zeros until it's length is the same as given length.
- * 
+ *
  * @param {Number} number	Number to pad.
  * @param {Number} length	Max string length with.
  * @return {String}			Returns a string padded with proper amount of '0'.
@@ -833,16 +1243,16 @@ function wrapLinesWithCode(str, css)
 function padNumber(number, length)
 {
 	var result = number.toString();
-	
+
 	while (result.length < length)
 		result = '0' + result;
-	
+
 	return result;
 };
 
 /**
  * Replaces tabs with spaces.
- * 
+ *
  * @param {String} code		Source code.
  * @param {Number} tabSize	Size of the tab.
  * @return {String}			Returns code with all tabs replaces by spaces.
@@ -850,7 +1260,7 @@ function padNumber(number, length)
 function processTabs(code, tabSize)
 {
 	var tab = '';
-	
+
 	for (var i = 0; i < tabSize; i++)
 		tab += ' ';
 
@@ -859,7 +1269,7 @@ function processTabs(code, tabSize)
 
 /**
  * Replaces tabs with smart spaces.
- * 
+ *
  * @param {String} code    Code to fix the tabs in.
  * @param {Number} tabSize Number of spaces in a column.
  * @return {String}        Returns code with all tabs replaces with roper amount of spaces.
@@ -870,12 +1280,12 @@ function processSmartTabs(code, tabSize)
 		tab = '\t',
 		spaces = ''
 		;
-	
-	// Create a string with 1000 spaces to copy spaces from... 
+
+	// Create a string with 1000 spaces to copy spaces from...
 	// It's assumed that there would be no indentation longer than that.
-	for (var i = 0; i < 50; i++) 
+	for (var i = 0; i < 50; i++)
 		spaces += '                    '; // 20 spaces * 50
-			
+
 	// This function inserts specified amount of spaces in the string
 	// where a tab is while removing that given tab.
 	function insertSpaces(line, pos, count)
@@ -889,12 +1299,12 @@ function processSmartTabs(code, tabSize)
 	// Go through all the lines and do the 'smart tabs' magic.
 	code = eachLine(code, function(line)
 	{
-		if (line.indexOf(tab) == -1) 
+		if (line.indexOf(tab) == -1)
 			return line;
-		
+
 		var pos = 0;
-		
-		while ((pos = line.indexOf(tab)) != -1) 
+
+		while ((pos = line.indexOf(tab)) != -1)
 		{
 			// This is pretty much all there is to the 'smart tabs' logic.
 			// Based on the position within the line and size of a tab,
@@ -902,10 +1312,10 @@ function processSmartTabs(code, tabSize)
 			var spaces = tabSize - pos % tabSize;
 			line = insertSpaces(line, pos, spaces);
 		}
-		
+
 		return line;
 	});
-	
+
 	return code;
 };
 
@@ -915,19 +1325,19 @@ function processSmartTabs(code, tabSize)
 function fixInputString(str)
 {
 	var br = /<br\s*\/?>|&lt;br\s*\/?&gt;/gi;
-	
+
 	if (sh.config.bloggerMode == true)
 		str = str.replace(br, '\n');
 
 	if (sh.config.stripBrs == true)
 		str = str.replace(br, '');
-		
+
 	return str;
 };
 
 /**
  * Removes all white space at the begining and end of a string.
- * 
+ *
  * @param {String} str   String to trim.
  * @return {String}      Returns string without leading and following white space characters.
  */
@@ -948,37 +1358,37 @@ function unindent(str)
 		regex = /^\s*/,
 		min = 1000
 		;
-	
+
 	// go through every line and check for common number of indents
-	for (var i = 0; i < lines.length && min > 0; i++) 
+	for (var i = 0; i < lines.length && min > 0; i++)
 	{
 		var line = lines[i];
-		
-		if (trim(line).length == 0) 
+
+		if (trim(line).length == 0)
 			continue;
-		
+
 		var matches = regex.exec(line);
-		
+
 		// In the event that just one line doesn't have leading white space
 		// we can't unindent anything, so bail completely.
-		if (matches == null) 
+		if (matches == null)
 			return str;
-			
+
 		min = Math.min(matches[0].length, min);
 	}
-	
+
 	// trim minimum common number of white space from the begining of every line
-	if (min > 0) 
-		for (var i = 0; i < lines.length; i++) 
+	if (min > 0)
+		for (var i = 0; i < lines.length; i++)
 			lines[i] = lines[i].substr(min);
-	
+
 	return lines.join('\n');
 };
 
 /**
  * Callback method for Array.sort() which sorts matches by
  * index position and then by length.
- * 
+ *
  * @param {Match} m1	Left object.
  * @param {Match} m2    Right object.
  * @return {Number}     Returns -1, 0 or -1 as a comparison result.
@@ -998,41 +1408,41 @@ function matchesSortCallback(m1, m2)
 		else if(m1.length > m2.length)
 			return 1;
 	}
-	
+
 	return 0;
 };
 
 /**
  * Executes given regular expression on provided code and returns all
  * matches that are found.
- * 
+ *
  * @param {String} code    Code to execute regular expression on.
  * @param {Object} regex   Regular expression item info from <code>regexList</code> collection.
  * @return {Array}         Returns a list of Match objects.
- */ 
+ */
 function getMatches(code, regexInfo)
 {
 	function defaultAdd(match, regexInfo)
 	{
 		return match[0];
 	};
-	
+
 	var index = 0,
 		match = null,
 		matches = [],
 		func = regexInfo.func ? regexInfo.func : defaultAdd
 		;
-	
+
 	while((match = regexInfo.regex.exec(code)) != null)
 	{
 		var resultMatch = func(match, regexInfo);
-		
+
 		if (typeof(resultMatch) == 'string')
 			resultMatch = [new sh.Match(resultMatch, match.index, regexInfo.css)];
 
 		matches = matches.concat(resultMatch);
 	}
-	
+
 	return matches;
 };
 
@@ -1044,23 +1454,23 @@ function getMatches(code, regexInfo)
 function processUrls(code)
 {
 	var gt = /(.*)((&gt;|&lt;).*)/;
-	
+
 	return code.replace(sh.regexLib.url, function(m)
 	{
 		var suffix = '',
 			match = null
 			;
-		
+
 		// We include &lt; and &gt; in the URL for the common cases like <http://google.com>
 		// The problem is that they get transformed into &lt;http://google.com&gt;
 		// Where as &gt; easily looks like part of the URL string.
-	
+
 		if (match = gt.exec(m))
 		{
 			m = match[1];
 			suffix = match[2];
 		}
-		
+
 		return '<a href="' + m + '">' + m + '</a>' + suffix;
 	});
 };
@@ -1074,11 +1484,11 @@ function getSyntaxHighlighterScriptTags()
 	var tags = document.getElementsByTagName('script'),
 		result = []
 		;
-	
+
 	for (var i = 0; i < tags.length; i++)
 		if (tags[i].type == 'syntaxhighlighter')
 			result.push(tags[i]);
-			
+
 	return result;
 };
 
@@ -1098,21 +1508,21 @@ function stripCData(original)
 		leftLength = left.length,
 		rightLength = right.length
 		;
-	
+
 	if (copy.indexOf(left) == 0)
 	{
 		copy = copy.substring(leftLength);
 		changed = true;
 	}
-	
+
 	var copyLength = copy.length;
-	
+
 	if (copy.indexOf(right) == copyLength - rightLength)
 	{
 		copy = copy.substring(0, copyLength - rightLength);
 		changed = true;
 	}
-	
+
 	return changed ? copy : original;
 };
 
@@ -1133,7 +1543,7 @@ function quickCodeHandler(e)
 		return;
 
 	highlighter = getHighlighterById(highlighterDiv.id);
-	
+
 	// add source class name
 	addClass(highlighterDiv, 'source');
 
@@ -1142,21 +1552,36 @@ function quickCodeHandler(e)
 	var lines = container.childNodes,
 		code = []
 		;
-	
-	for (var i = 0; i < lines.length; i++)
-		code.push(lines[i].innerText || lines[i].textContent);
-	
+
+//	for (var i = 0; i < lines.length; i++)
+//		code.push(lines[i].innerText || lines[i].textContent);
+	for (var i = 0; i < lines.length; i++) {
+		var _line = lines[i].innerText || lines[i].textContent;
+
+		_line = _line.replace(/\r|\n/, '');
+		if (trim(_line) == '') _line = '';
+//		if (i < 2) alert(_line);
+
+		var _p = /^\t*[^\t\S]{4}/;
+		while (_p.test(_line)) {
+			_line = _line.replace(/^(\t*)[^\t\S]{4}/, '$1\t');
+		}
+
+		code.push(_line);
+	}
+
 	// using \r instead of \r or \r\n makes this work equally well on IE, FF and Webkit
-	code = code.join('\r');
-	
+//	code = code.join('\r');
+	code = code.join('\n');
+
 	// inject <textarea/> tag
 	textarea.appendChild(document.createTextNode(code));
 	container.appendChild(textarea);
-	
+
 	// preselect all text
 	textarea.focus();
 	textarea.select();
-	
+
 	// set up handler for lost focus
 	attachEvent(textarea, 'blur', function(e)
 	{
@@ -1184,7 +1609,7 @@ sh.Match.prototype.toString = function()
 
 /**
  * Simulates HTML code with a scripting language embedded.
- * 
+ *
  * @param {String} scriptBrushName Brush name of the scripting language.
  */
 sh.HtmlScript = function(scriptBrushName)
@@ -1199,36 +1624,36 @@ sh.HtmlScript = function(scriptBrushName)
 
 	if (brushClass == null)
 		return;
-	
+
 	scriptBrush = new brushClass();
-	
+
 	for(var i = 0; i < methodsToExpose.length; i++)
 		// make a closure so we don't lose the name after i changes
 		(function() {
 			var name = methodsToExpose[i];
-			
+
 			ref[name] = function()
 			{
 				return xmlBrush[name].apply(xmlBrush, arguments);
 			};
 		})();
-	
+
 	if (scriptBrush.htmlScript == null)
 	{
 		alert(sh.config.strings.brushNotHtmlScript + scriptBrushName);
 		return;
 	}
-	
+
 	xmlBrush.regexList.push(
 		{ regex: scriptBrush.htmlScript.code, func: process }
 	);
-	
+
 	function offsetMatches(matches, offset)
 	{
-		for (var j = 0; j < matches.length; j++) 
+		for (var j = 0; j < matches.length; j++)
 			matches[j].index += offset;
 	}
-	
+
 	function process(match, info)
 	{
 		var code = match.code,
@@ -1246,7 +1671,7 @@ sh.HtmlScript = function(scriptBrushName)
 			offsetMatches(result, offset);
 			matches = matches.concat(result);
 		}
-		
+
 		// add left script bracket
 		if (htmlScript.left != null && match.left != null)
 		{
@@ -1254,7 +1679,7 @@ sh.HtmlScript = function(scriptBrushName)
 			offsetMatches(result, match.index);
 			matches = matches.concat(result);
 		}
-		
+
 		// add right script bracket
 		if (htmlScript.right != null && match.right != null)
 		{
@@ -1262,10 +1687,10 @@ sh.HtmlScript = function(scriptBrushName)
 			offsetMatches(result, match.index + match[0].lastIndexOf(match.right));
 			matches = matches.concat(result);
 		}
-		
+
 		for (var j = 0; j < matches.length; j++)
 			matches[j].brushName = brushClass.brushName;
-			
+
 		return matches;
 	}
 };
@@ -1291,7 +1716,7 @@ sh.Highlighter.prototype = {
 		var result = this.params[name];
 		return toBoolean(result == null ? defaultValue : result);
 	},
-	
+
 	/**
 	 * Shortcut to document.createElement().
 	 * @param {String} name		Name of the element to create (DIV, A, etc).
@@ -1301,7 +1726,7 @@ sh.Highlighter.prototype = {
 	{
 		return document.createElement(name);
 	},
-	
+
 	/**
 	 * Applies all regular expression to the code and stores all found
 	 * matches in the `this.matches` array.
@@ -1312,52 +1737,52 @@ sh.Highlighter.prototype = {
 	findMatches: function(regexList, code)
 	{
 		var result = [];
-		
+
 		if (regexList != null)
-			for (var i = 0; i < regexList.length; i++) 
+			for (var i = 0; i < regexList.length; i++)
 				// BUG: length returns len+1 for array if methods added to prototype chain (oising@gmail.com)
 				if (typeof (regexList[i]) == "object")
 					result = result.concat(getMatches(code, regexList[i]));
-		
+
 		// sort and remove nested the matches
 		return this.removeNestedMatches(result.sort(matchesSortCallback));
 	},
-	
+
 	/**
-	 * Checks to see if any of the matches are inside of other matches. 
-	 * This process would get rid of highligted strings inside comments, 
+	 * Checks to see if any of the matches are inside of other matches.
+	 * This process would get rid of highligted strings inside comments,
 	 * keywords inside strings and so on.
 	 */
 	removeNestedMatches: function(matches)
 	{
 		// Optimized by Jose Prado (http://joseprado.com)
-		for (var i = 0; i < matches.length; i++) 
-		{ 
+		for (var i = 0; i < matches.length; i++)
+		{
 			if (matches[i] === null)
 				continue;
-			
+
 			var itemI = matches[i],
 				itemIEndPos = itemI.index + itemI.length
 				;
-			
-			for (var j = i + 1; j < matches.length && matches[i] !== null; j++) 
+
+			for (var j = i + 1; j < matches.length && matches[i] !== null; j++)
 			{
 				var itemJ = matches[j];
-				
-				if (itemJ === null) 
+
+				if (itemJ === null)
 					continue;
-				else if (itemJ.index > itemIEndPos) 
+				else if (itemJ.index > itemIEndPos)
 					break;
 				else if (itemJ.index == itemI.index && itemJ.length > itemI.length)
 					matches[i] = null;
-				else if (itemJ.index >= itemI.index && itemJ.index < itemIEndPos) 
+				else if (itemJ.index >= itemI.index && itemJ.index < itemIEndPos)
 					matches[j] = null;
 			}
 		}
-		
+
 		return matches;
 	},
-	
+
 	/**
 	 * Creates an array containing integer line numbers starting from the 'first-line' param.
 	 * @return {Array} Returns array of integers.
@@ -1367,28 +1792,28 @@ sh.Highlighter.prototype = {
 		var lines = [],
 			firstLine = parseInt(this.getParam('first-line'))
 			;
-		
+
 		eachLine(code, function(line, index)
 		{
 			lines.push(index + firstLine);
 		});
-		
+
 		return lines;
 	},
-	
+
 	/**
 	 * Determines if specified line number is in the highlighted list.
 	 */
 	isLineHighlighted: function(lineNumber)
 	{
 		var list = this.getParam('highlight', []);
-		
-		if (typeof(list) != 'object' && list.push == null) 
+
+		if (typeof(list) != 'object' && list.push == null)
 			list = [ list ];
-		
+
 		return indexOf(list, lineNumber.toString()) != -1;
 	},
-	
+
 	/**
 	 * Generates HTML markup for a single line of code while determining alternating line style.
 	 * @param {Integer} lineNumber	Line number.
@@ -1403,16 +1828,16 @@ sh.Highlighter.prototype = {
 			'index' + lineIndex,
 			'alt' + (lineNumber % 2 == 0 ? 1 : 2).toString()
 		];
-		
+
 		if (this.isLineHighlighted(lineNumber))
 		 	classes.push('highlighted');
-		
+
 		if (lineNumber == 0)
 			classes.push('break');
-			
+
 		return '<div class="' + classes.join(' ') + '">' + code + '</div>';
 	},
-	
+
 	/**
 	 * Generates HTML markup for line number column.
 	 * @param {String} code			Complete code HTML markup.
@@ -1426,24 +1851,24 @@ sh.Highlighter.prototype = {
 			firstLine = parseInt(this.getParam('first-line')),
 			pad = this.getParam('pad-line-numbers')
 			;
-		
+
 		if (pad == true)
 			pad = (firstLine + count - 1).toString().length;
 		else if (isNaN(pad) == true)
 			pad = 0;
-			
+
 		for (var i = 0; i < count; i++)
 		{
 			var lineNumber = lineNumbers ? lineNumbers[i] : firstLine + i,
 				code = lineNumber == 0 ? sh.config.space : padNumber(lineNumber, pad)
 				;
-				
+
 			html += this.getLineHtml(i, lineNumber, code);
 		}
-		
+
 		return html;
 	},
-	
+
 	/**
 	 * Splits block of text into individual DIV lines.
 	 * @param {String} code			Code to highlight.
@@ -1453,7 +1878,7 @@ sh.Highlighter.prototype = {
 	getCodeLinesHtml: function(html, lineNumbers)
 	{
 		html = trim(html);
-		
+
 		var lines = splitLines(html),
 			padLength = this.getParam('pad-line-numbers'),
 			firstLine = parseInt(this.getParam('first-line')),
@@ -1471,26 +1896,47 @@ sh.Highlighter.prototype = {
 
 			if (indent != null)
 			{
+				// bluelovers
+				if (sh.vars.spaceWidth === null) {
+//					sh.vars.spaceWidth = 7;
+					sh.vars.spaceWidth = 2;
+				}
+				// bluelovers
+
 				spaces = indent[0].toString();
+
 				line = line.substr(spaces.length);
+
+				// bluelovers
+				spaces = spaces.replace(sh.config.space, ' ');
+				indent = sh.vars.spaceWidth * spaces.length;
+				// bluelovers
+
 				spaces = spaces.replace(' ', sh.config.space);
+
+			// bluelovers
+			} else {
+				indent = 0;
+			// bluelovers
+
 			}
 
 			line = trim(line);
-			
+
 			if (line.length == 0)
 				line = sh.config.space;
-			
+
 			html += this.getLineHtml(
 				i,
-				lineNumber, 
-				(spaces != null ? '<code class="' + brushName + ' spaces">' + spaces + '</code>' : '') + line
+				lineNumber,
+//				(spaces != null ? '<code class="' + brushName + ' spaces">' + spaces + '</code>' : '') + line
+				(spaces != null ? '<code class="' + brushName + ' spaces">' + spaces + '</code>' : '') + '<code class="linecontent" style="margin-left: ' + indent + 'px !important;'+(line == sh.config.space ? 'visibility:hidden;' : '')+'">' + line + '</code>'
 			);
 		}
-		
+
 		return html;
 	},
-	
+
 	/**
 	 * Returns HTML for the table title or empty string if title is null.
 	 */
@@ -1498,7 +1944,7 @@ sh.Highlighter.prototype = {
 	{
 		return title ? '<caption>' + title + '</caption>' : '';
 	},
-	
+
 	/**
 	 * Finds all matches in the source code.
 	 * @param {String} code		Source code to process matches in.
@@ -1507,30 +1953,30 @@ sh.Highlighter.prototype = {
 	 */
 	getMatchesHtml: function(code, matches)
 	{
-		var pos = 0, 
+		var pos = 0,
 			result = '',
 			brushName = this.getParam('brush', '')
 			;
-		
+
 		function getBrushNameCss(match)
 		{
 			var result = match ? (match.brushName || brushName) : brushName;
 			return result ? result + ' ' : '';
 		};
-		
+
 		// Finally, go through the final list of matches and pull the all
 		// together adding everything in between that isn't a match.
-		for (var i = 0; i < matches.length; i++) 
+		for (var i = 0; i < matches.length; i++)
 		{
 			var match = matches[i],
 				matchBrushName
 				;
-			
-			if (match === null || match.length === 0) 
+
+			if (match === null || match.length === 0)
 				continue;
-			
+
 			matchBrushName = getBrushNameCss(match);
-			
+
 			result += wrapLinesWithCode(code.substr(pos, match.index - pos), matchBrushName + 'plain')
 					+ wrapLinesWithCode(match.value, matchBrushName + match.css)
 					;
@@ -1543,7 +1989,7 @@ sh.Highlighter.prototype = {
 
 		return result;
 	},
-	
+
 	/**
 	 * Generates HTML markup for the whole syntax highlighter.
 	 * @param {String} code Source code.
@@ -1557,7 +2003,7 @@ sh.Highlighter.prototype = {
 			matches,
 			lineNumbers
 			;
-		
+
 		// process light mode
 		if (this.getParam('light') == true)
 			this.params.toolbar = this.params.gutter = false;
@@ -1566,7 +2012,7 @@ sh.Highlighter.prototype = {
 
 		if (this.getParam('collapse') == true)
 			classes.push('collapsed');
-		
+
 		if ((gutter = this.getParam('gutter')) == false)
 			classes.push('nogutter');
 
@@ -1593,7 +2039,7 @@ sh.Highlighter.prototype = {
 
 		if (gutter)
 			lineNumbers = this.figureOutLineNumbers(code);
-		
+
 		// find matches in the code using brushes regex list
 		matches = this.findMatches(this.regexList, code);
 		// processes found matches into the html
@@ -1604,18 +2050,19 @@ sh.Highlighter.prototype = {
 		// finally, process the links
 		if (this.getParam('auto-links'))
 			html = processUrls(html);
-		
+
 		if (typeof(navigator) != 'undefined' && navigator.userAgent && navigator.userAgent.match(/MSIE/))
 			classes.push('ie');
-		
-		html = 
+
+		html =
 			'<div id="' + getHighlighterId(this.id) + '" class="' + classes.join(' ') + '">'
 				+ (this.getParam('toolbar') ? sh.toolbar.getHtml(this) : '')
 				+ '<table border="0" cellpadding="0" cellspacing="0">'
 					+ this.getTitleHtml(this.getParam('title'))
 					+ '<tbody>'
 						+ '<tr>'
-							+ (gutter ? '<td class="gutter">' + this.getLineNumbersHtml(code) + '</td>' : '')
+//							+ (gutter ? '<td class="gutter">' + this.getLineNumbersHtml(code) + '</td>' : '')
+							+ (gutter ? '<td class="gutter" style="width: '+(splitLines(code).length.toString().length+1)+'em !important;">' + this.getLineNumbersHtml(code) + '</td>' : '')
 							+ '<td class="code">'
 								+ '<div class="container">'
 									+ html
@@ -1625,11 +2072,20 @@ sh.Highlighter.prototype = {
 					+ '</tbody>'
 				+ '</table>'
 			+ '</div>'
+
+			// bluelovers
+			+ '<script>jQuery(function($){'
+			+ '$(\'#'+getHighlighterId(this.id)+' .gutter .line\').each(function(index){'
+			+ '$(this).css(\'cssText\', $(this).css(\'cssText\')+\';height:\'+$(\'#'+getHighlighterId(this.id)+' .code .index\'+index).outerHeight()+\'px !important\');'
+			+ '});'
+			+ '}(jQuery));'
+			// bluelovers
+
 			;
-			
+
 		return html;
 	},
-	
+
 	/**
 	 * Highlights the code and returns complete HTML.
 	 * @param {String} code     Code to highlight.
@@ -1637,26 +2093,26 @@ sh.Highlighter.prototype = {
 	 */
 	getDiv: function(code)
 	{
-		if (code === null) 
+		if (code === null)
 			code = '';
-		
+
 		this.code = code;
 
 		var div = this.create('div');
 
 		// create main HTML
 		div.innerHTML = this.getHtml(code);
-		
+
 		// set up click handlers
 		if (this.getParam('toolbar'))
 			attachEvent(findElement(div, '.toolbar'), 'click', sh.toolbar.handler);
-		
+
 		if (this.getParam('quick-code'))
 			attachEvent(findElement(div, '.code'), 'dblclick', quickCodeHandler);
-		
+
 		return div;
 	},
-	
+
 	/**
 	 * Initializes the highlighter/brush.
 	 *
@@ -1668,18 +2124,18 @@ sh.Highlighter.prototype = {
 	init: function(params)
 	{
 		this.id = guid();
-		
+
 		// register this instance in the highlighters list
 		storeHighlighter(this);
-		
+
 		// local params take precedence over defaults
 		this.params = merge(sh.defaults, params || {})
-		
+
 		// process light mode
 		if (this.getParam('light') == true)
 			this.params.toolbar = this.params.gutter = false;
 	},
-	
+
 	/**
 	 * Converts space separated list of keywords into a regular expression string.
 	 * @param {String} str    Space separated keywords.
@@ -1691,10 +2147,10 @@ sh.Highlighter.prototype = {
 			.replace(/^\s+|\s+$/g, '')
 			.replace(/\s+/g, '|')
 			;
-		
+
 		return '\\b(?:' + str + ')\\b';
 	},
-	
+
 	/**
 	 * Makes a brush compatible with the `html-script` functionality.
 	 * @param {Object} regexGroup Object containing `left` and `right` regular expressions.

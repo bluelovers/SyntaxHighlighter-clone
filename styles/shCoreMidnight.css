@@ -7,7 +7,7 @@
  *
  * @version
  * 3.0.83 (July 02 2010)
- * 
+ *
  * @copyright
  * Copyright (C) 2004-2010 Alex Gorbatchev.
  *
@@ -32,7 +32,8 @@
   float: none !important;
   height: auto !important;
   left: auto !important;
-  line-height: 1.1em !important;
+  /*line-height: 1.1em !important;*/
+  line-height: 14px !important;
   margin: 0 !important;
   outline: 0 !important;
   overflow: visible !important;
@@ -44,10 +45,12 @@
   vertical-align: baseline !important;
   width: auto !important;
   box-sizing: content-box !important;
-  font-family: "Consolas", "Bitstream Vera Sans Mono", "Courier New", Courier, monospace !important;
+  /*font-family: "Consolas", "Bitstream Vera Sans Mono", "Courier New", Courier, monospace !important;*/
+  font-family: 'andale mono',"Bitstream Vera Sans Mono",'lucida console',"Courier New", Courier, monospace !important;*/
   font-weight: normal !important;
   font-style: normal !important;
-  font-size: 1em !important;
+  /*font-size: 1em !important;*/
+  font-size: 12px !important;
   min-height: inherit !important;
   min-height: auto !important;
 }
@@ -59,8 +62,28 @@
   overflow: auto !important;
   font-size: 1em !important;
 }
+
+/* bluelovers */
+.syntaxhighlighter { max-height:30em; }
+.syntaxhighlighter code.spaces, .syntaxhighlighter pre.spaces {
+	/*display:inline-block;*/
+	display:none;
+}
+
+.syntaxhighlighter .line .linecontent {
+	background:transparent url(wrapping.png) no-repeat scroll 0 1.1em !important;
+}
+
+.syntaxhighlighter .line .linecontent {
+	display:block !important;
+	padding-left:1.5em !important;
+	text-indent:-1.5em !important;
+}
+/* bluelovers */
+
 .syntaxhighlighter.source {
-  overflow: hidden !important;
+  /*overflow: hidden !important;*/
+  overflow: auto !important;
 }
 .syntaxhighlighter .bold {
   font-weight: bold !important;
@@ -240,6 +263,16 @@
 .syntaxhighlighter .line.highlighted.number {
   color: #38566f !important;
 }
+
+/* bluelovers */
+.syntaxhighlighter .line:hover.alt1, .syntaxhighlighter .line:hover.alt2 {
+  background-color: #253e5a !important;
+}
+.syntaxhighlighter .line:hover.number {
+  color: #38566f !important;
+}
+/* bluelovers */
+
 .syntaxhighlighter table caption {
   color: #d1edff !important;
 }
@@ -311,7 +344,8 @@
 .syntaxhighlighter .script {
   font-weight: bold !important;
   color: #b43d3d !important;
-  background-color: none !important;
+  /*background-color: none !important;*/
+  background-color: #404040 !important;
 }
 .syntaxhighlighter .color1, .syntaxhighlighter .color1 a {
   color: #f8bb00 !important;
