@@ -198,7 +198,8 @@
   background: none !important;
 }
 .syntaxhighlighter.printing .line .number {
-  color: #bbbbbb !important;
+  /*color: #bbbbbb !important;*/
+  color: #38566F !important;
 }
 .syntaxhighlighter.printing .line .content {
   color: black !important;
@@ -273,20 +274,26 @@
 .syntaxhighlighter .line:hover.alt1, .syntaxhighlighter .line:hover.alt2 {
   background-color: #253e5a !important;
 }
-.syntaxhighlighter .line:hover.number {
-  color: #38566f !important;
-}
 /* bluelovers */
 
 .syntaxhighlighter table caption {
   color: #d1edff !important;
 }
 .syntaxhighlighter .gutter {
-  color: #afafaf !important;
+  /*color: #afafaf !important;*/
+  color:#38566F !important;
 }
+
+/* bluelovers */
+.syntaxhighlighter .gutter .line:hover {
+	color: #afafaf !important;
+}
+/* bluelovers */
+
 .syntaxhighlighter .gutter .line {
   border-right: 3px solid #435a5f !important;
 }
+
 .syntaxhighlighter .gutter .line.highlighted {
   background-color: #435a5f !important;
   color: #0f192a !important;
