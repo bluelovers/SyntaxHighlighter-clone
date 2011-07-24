@@ -767,6 +767,11 @@ var sh = {
 				element.id = target.id;
 
 			target.parentNode.replaceChild(element, target);
+
+			// bluelvoers
+			// 用來修正斷行後的高度
+			highlighter.execAppendScript();
+			// bluelvoers
 		}
 	},
 
@@ -2086,6 +2091,31 @@ sh.Highlighter.prototype = {
 
 		return html;
 	},
+
+	// bluelovers
+	/**
+	 * 用來修正斷行後的高度
+	 */
+	execAppendScript: function() {
+		if (jQuery) {
+			var id = this.id;
+
+			jQuery('#highlighter_' + id)
+				.find('.gutter .line')
+				.each(function(index){
+					jQuery(this).css(
+						'cssText',
+							jQuery(this).css('cssText')
+							+ ';height:'
+							+ jQuery('#highlighter_' + id)
+								.find('.code .index'+index)
+								.outerHeight()
+							+ 'px !important'
+					);
+			});
+		}
+	},
+	// bluelovers
 
 	/**
 	 * Highlights the code and returns complete HTML.
