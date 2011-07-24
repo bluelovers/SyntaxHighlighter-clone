@@ -2077,16 +2077,6 @@ sh.Highlighter.prototype = {
 					+ '</tbody>'
 				+ '</table>'
 			+ '</div>'
-
-			// bluelovers
-			// 修改 jquery selector 判斷式防止某些不知名 BUG
-			+ '<script>jQuery.load(function($){'
-			+ '$(\'#'+getHighlighterId(this.id)+'\').find(\'.gutter .line\').each(function(index){'
-			+ '$(this).css(\'cssText\', $(this).css(\'cssText\')+\';height:\'+$(\'#'+getHighlighterId(this.id)+'\').find(\'.code .index\'+index).outerHeight()+\'px !important\');'
-			+ '});'
-			+ '}(jQuery));'
-			// bluelovers
-
 			;
 
 		return html;
